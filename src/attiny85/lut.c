@@ -52,6 +52,11 @@ void cbs_add8(DMA_MEM_MAP *mp, DMA_CB *cb, uint16_t *lut, uint8_t *a, uint8_t *b
     cb[8].stride = 0xfffe<<16;
 }
 
+void cbs_add16(DMA_MEM_MAP *mp, DMA_CB *cb, uint16_t *lut, uint16_t *a, uint16_t *b, uint8_t *c, uint16_t *tmp, uint32_t *sum, DMA_CB *next_cb) {
+    cbs_add8(mp, cb, lut, (uint8_t*)a, (uint8_t*)b, c, tmp, (uint16_t*)sum, cb+9);
+    cbs_add8(mp, cb+9, lut, ((uint8_t*)a)+1, ((uint8_t*)b)+1, ((uint8_t*)sum)+1, tmp, (uint16_t*)(((uint8_t*)sum)+1), next_cb);
+}
+
 int main() {
     map_periph(&dma_regs, (void *)DMA_BASE, PAGE_SIZE);
     map_uncached_mem(&uc_mem, 16*PAGE_SIZE);
@@ -60,15 +65,14 @@ int main() {
     DMA_CB *cbs = alloc_uncached_cbs(&uc_mem, 16);
     uint16_t *addlut = alloc_uncached_addlut(&uc_mem);
     uint16_t *tmp = alloc_uncached_uint16(&uc_mem, 256);
-    uint16_t *sum = alloc_uncached_uint16(&uc_mem, 1);
-    uint8_t *a = alloc_uncached_uint8(&uc_mem, 1);
-    uint8_t *b = alloc_uncached_uint8(&uc_mem, 1);
+    uint32_t *sum = alloc_uncached_uint32(&uc_mem, 1);
+    uint16_t *a = alloc_uncached_uint16(&uc_mem, 1);
+    uint16_t *b = alloc_uncached_uint16(&uc_mem, 1);
     uint8_t *c = alloc_uncached_uint8(&uc_mem, 1);
-    a[0] = 255;
-    b[0] = 255;
-    c[0] = 1;
-    cbs_add8(&uc_mem, cbs, addlut, a, b, c, tmp, sum, 0);
-    printf("lut is %04x %04x %04x %04x\n", addlut[0], addlut[1], addlut[2], addlut[3]);
+    a[0] = 7344;
+    b[0] = 12532;
+    c[0] = 0;
+    cbs_add16(&uc_mem, cbs, addlut, a, b, c, tmp, sum, 0);
 
     enable_dma(DMA_CHAN);
     start_dma(&uc_mem, DMA_CHAN, cbs, 0);
@@ -76,8 +80,7 @@ int main() {
     while (*REG32(dma_regs, DMA_REG(DMA_CHAN, DMA_CONBLK_AD)));
     clock_t end_time = clock();
     uint16_t *res = tmp;
-    printf("result is %04x %04x %04x %04x\n", res[0], res[1], res[2], res[3]);
-    printf("sum is %04x\n", sum[0]);
+    printf("sum is %d\n", sum[0]);
     printf("Completed in %luus\n", end_time - start_time);
 
     done(0);
