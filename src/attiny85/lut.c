@@ -32,6 +32,12 @@ void cbs_lut8(DMA_MEM_MAP *mp, DMA_CB *cb, uint8_t *lut, uint8_t *index, uint8_t
     cb[1].stride = 0xffff<<16;
 }
 
+void cbs_lut(DMA_MEM_MAP *mp, DMA_CB *cb, void *lut, uint8_t *index, void *target, uint16_t size, uint16_t spacing, DMA_CB *next_cb) {
+    cb_mem2mem(mp, cb, 0, 1, index, &(cb[1].stride), cb+1);
+    cb_mem2mem(mp, cb+1, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (spacing<<16) | size, lut-size*spacing, target, next_cb);
+    cb[1].stride = (-size)<<16;
+}
+
 void cbs_add8(DMA_MEM_MAP *mp, DMA_CB *cb, uint16_t *lut, uint8_t *a, uint8_t *b, uint8_t *c, uint16_t *tmp, uint16_t *sum, DMA_CB *next_cb) {
     cb_mem2mem(mp, cb, 0, 4, &(cb[0].unused), &(cb[4].next_cb), cb+1);
     cb[0].unused = MEM_BUS_ADDR(mp, cb+5);
@@ -79,7 +85,6 @@ int main() {
     clock_t start_time = clock();
     while (*REG32(dma_regs, DMA_REG(DMA_CHAN, DMA_CONBLK_AD)));
     clock_t end_time = clock();
-    uint16_t *res = tmp;
     printf("sum is %d\n", sum[0]);
     printf("Completed in %luus\n", end_time - start_time);
 
