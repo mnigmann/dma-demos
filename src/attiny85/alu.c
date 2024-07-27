@@ -6,21 +6,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include "alu.h"
 
 #define DMA_CHAN 5
-
-#define ALUCON_CZNVSH   0
-#define ALUCON_ZNVS     1
-#define ALUCON_CZNVS    2
-
-DMA_MEM_MAP uc_mem;
-
-void done(int sig) {
-    stop_dma(DMA_CHAN);
-    unmap_uncached_mem(&uc_mem);
-    terminate(0);
-    exit(0);
-}
 
 void load_bits(uint8_t val, uint8_t *buf) {
     for (uint8_t i=0; i < 8; i++) {
@@ -98,6 +86,28 @@ uint32_t cbs_alu8(DMA_MEM_MAP *mp, DMA_CB *cb, uint8_t *alu_lut, uint8_t *rd, ui
     return 16;
 }
 
+uint32_t cbs_inv(DMA_MEM_MAP *mp, DMA_CB *cb, uint8_t *src, uint8_t *dest, uint8_t nbits, DMA_CB *next_cb) {
+    cb_mem2mem(mp, cb, DMA_CB_DEST_INC | DMA_CB_SRCE_INC | DMA_TDMODE, (nbits<<16) | 1, &(cb[0].unused), dest, cb+1);
+    cb[0].stride = 0xffff;
+    cb[0].unused = 0x01010101;
+    cb_mem2mem(mp, cb+1, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (nbits<<16) | 1, src, &(cb[2].tfr_len), cb+2);
+    cb[1].unused = 0;
+    cb[1].stride = (31 << 16);
+    for (uint8_t i=0; i < nbits; i++) {
+        cb_mem2mem(mp, cb+2+i, 0, 0, &(cb[1].unused), dest+i, cb+3+i);
+    }
+    cb[2+nbits].next_cb = (next_cb ? MEM_BUS_ADDR(mp, next_cb) : 0);
+}
+
+/*DMA_MEM_MAP uc_mem;
+
+void done(int sig) {
+    stop_dma(DMA_CHAN);
+    unmap_uncached_mem(&uc_mem);
+    terminate(0);
+    exit(0);
+}
+
 int main(void) {
     signal(SIGINT, done);
     map_periph(&dma_regs, (void *)DMA_BASE, PAGE_SIZE);
@@ -135,4 +145,4 @@ int main(void) {
     printf("Completed in %luus\n", end_time - start_time);
 
     done(0);
-}
+}*/

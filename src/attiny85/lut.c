@@ -6,17 +6,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include "dma_chain.h"
 
 #define DMA_CHAN 5
-
-DMA_MEM_MAP uc_mem;
-
-void done(int sig) {
-    stop_dma(DMA_CHAN);
-    unmap_uncached_mem(&uc_mem);
-    terminate(0);
-    exit(0);
-}
 
 uint16_t *alloc_uncached_addlut(DMA_MEM_MAP *mp) {
     uint16_t *ptr = alloc_uncached_uint16(mp, 512);
@@ -26,7 +18,7 @@ uint16_t *alloc_uncached_addlut(DMA_MEM_MAP *mp) {
     return ptr;
 }
 
-uint8_t *alloc_uncached_8to32(DMA_MEM_MAP *mp) {
+uint8_t *alloc_uncached_8to64(DMA_MEM_MAP *mp) {
     pad_uncached(mp, 8);
     uint8_t *ptr = alloc_uncached_uint8(mp, 8*256);
     for (int i=0; i < 256; i++) {
@@ -43,54 +35,107 @@ void cbs_lut8(DMA_MEM_MAP *mp, DMA_CB *cb, uint8_t *lut, uint8_t *index, uint8_t
     cb[1].stride = 0xffff<<16;
 }
 
-void cbs_lut(DMA_MEM_MAP *mp, DMA_CB *cb, void *lut, uint8_t *index, void *target, uint16_t size, uint16_t spacing, DMA_CB *next_cb) {
-    cb_mem2mem(mp, cb, 0, 1, index, &(cb[1].stride), cb+1);
-    cb_mem2mem(mp, cb+1, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (spacing<<16) | size, lut-size*spacing, target, next_cb);
-    cb[1].stride = (-size)<<16;
+DMA_CB *cc_lut(DMA_CTX *pctx, DMA_MEM_REF lut, DMA_MEM_REF index, DMA_MEM_REF target, uint16_t size, uint16_t spacing) {
+    DMA_CTX *ctx = init_ctx(pctx);
+    cc_mem2mem(ctx, 0, 1, index, CC_MREF(&(CC_REF(1).stride)));
+    CC_REF(0).stride = (-size)<<16;
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (spacing<<16) | size, cc_ofs(lut, -size*spacing), target);
+    cc_ret(ctx);
+    return cc_clean(pctx, ctx);
 }
 
-void cbs_convert_8to32(DMA_MEM_MAP *mp, DMA_CB *cb, uint8_t *lut, uint8_t *value, uint8_t *target, DMA_CB *next_cb) {
-    cbs_lut(mp, cb, lut, value, target, 8, 8, next_cb);
+DMA_CB *cc_convert_8to64(DMA_CTX *pctx, DMA_MEM_REF lut, DMA_MEM_REF value, DMA_MEM_REF target) {
+    return cc_lut(pctx, lut, value, target, 8, 8);
 }
 
-void cbs_convert_32to8(DMA_MEM_MAP *mp, DMA_CB *cb, uint16_t *lut, uint16_t *tmp, uint8_t *value, uint8_t *target, DMA_CB *next_cb) {
-    cb_mem2mem(mp, cb, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2*256, lut, tmp, cb+1);
-    cb_mem2mem(mp, cb+1, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (8<<16) | 1, value, &(cb[9].tfr_len), cb+2);
-    cb[1].stride = ((0x10000 - 33)<<16);
-    cb_mem2mem(mp, cb+2, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (256<<16), tmp+128, tmp, cb+3);
-    cb_mem2mem(mp, cb+3, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (128<<16), tmp+64, tmp, cb+4);
-    cb_mem2mem(mp, cb+4, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (64<<16), tmp+32, tmp, cb+5);
-    cb_mem2mem(mp, cb+5, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (32<<16), tmp+16, tmp, cb+6);
-    cb_mem2mem(mp, cb+6, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (16<<16), tmp+8, tmp, cb+7);
-    cb_mem2mem(mp, cb+7, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (8<<16), tmp+4, tmp, cb+8);
-    cb_mem2mem(mp, cb+8, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (4<<16), tmp+2, tmp, cb+9);
-    cb_mem2mem(mp, cb+9, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (2<<16), tmp+1, tmp, cb+10);
-    cb_mem2mem(mp, cb+10, 0, 1, tmp, target, next_cb);
+DMA_CB *cc_convert_64to8(DMA_CTX *pctx, DMA_MEM_REF lut, DMA_MEM_REF tmp, DMA_MEM_REF value, DMA_MEM_REF target) {
+    DMA_CTX *ctx = init_ctx(pctx);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2*256, lut, tmp);
+    CC_REF(0).stride = ((0x10000 - 33)<<16);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (8<<16) | 1, value, CC_RREF(8, tfr_len));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (256<<16), cc_ofs(tmp, 256), tmp);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (128<<16), cc_ofs(tmp, 128), tmp);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (64<<16), cc_ofs(tmp, 64), tmp);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (32<<16), cc_ofs(tmp, 32), tmp);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (16<<16), cc_ofs(tmp, 16), tmp);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (8<<16), cc_ofs(tmp, 8), tmp);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (4<<16), cc_ofs(tmp, 4), tmp);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (2<<16), cc_ofs(tmp, 2), tmp);
+    cc_mem2mem(ctx, 0, 1, tmp, target);
+    cc_ret(ctx);
+    return cc_clean(pctx, ctx);
 }
 
-void cbs_add8(DMA_MEM_MAP *mp, DMA_CB *cb, uint16_t *lut, uint8_t *a, uint8_t *b, uint8_t *c, uint16_t *tmp, uint16_t *sum, DMA_CB *next_cb) {
-    cb_mem2mem(mp, cb, 0, 4, &(cb[0].unused), &(cb[4].next_cb), cb+1);
-    cb[0].unused = MEM_BUS_ADDR(mp, cb+5);
-    cb_mem2mem(mp, cb+1, 0, 1, c, &(cb[2].tfr_len), cb+2);
-    cb_mem2mem(mp, cb+2, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (4<<16), &(cb[2].unused), &(cb[4].next_cb), cb+3);
-    cb[2].unused = MEM_BUS_ADDR(mp, cb+6);
-    cb_mem2mem(mp, cb+3, 0, 1, a, &(cb[5].stride), cb+4);
-    cb_mem2mem(mp, cb+4, 0, 1, a, &(cb[6].stride), cb+5);
+/*void cbs_combined_shift(DMA_MEM_MAP *mp, DMA_CB *cb, void *lut, uint8_t size, uint8_t *value, uint8_t nbits, DMA_CB *next_cb) {
+    cb_mem2mem(mp, cb, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (nbits<<16) | 1, value, &(cb[nbits].tfr_len), cb+1);
+    cb[0].stride = ((0x10000 - 33)<<16);
+    for (uint8_t i=0; i < nbits; i++)
+        cb_mem2mem(mp, cb+1+i, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (size << (15 + nbits - i)), lut+(size<<(nbits - i - 1)), lut, cb+2+i);
+    cb[nbits].next_cb = (next_cb ? MEM_BUS_ADDR(mp, next_cb) : 0);
+}
+
+void cbs_inv_combined_shift(DMA_MEM_MAP *mp, DMA_CB *cb, void *lut, uint8_t size, uint8_t *value, uint8_t nbits, DMA_CB *next_cb) {
+    cb_mem2mem(mp, cb, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (nbits<<16) | 1, value, &(cb[nbits].tfr_len), cb+1);
+    cb[0].stride = ((0x10000 - 33)<<16);
+    for (uint8_t i=0; i < nbits; i++)
+        cb_mem2mem(mp, cb+1+i, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (size << (16 + i)), lut, lut+(size<<i), cb+2+i);
+    cb[nbits].next_cb = (next_cb ? MEM_BUS_ADDR(mp, next_cb) : 0);
+}*/
+
+DMA_CB *cc_add8(DMA_CTX *pctx, DMA_MEM_REF lut, DMA_MEM_REF a, DMA_MEM_REF b, DMA_MEM_REF c, 
+        DMA_MEM_REF tmp, DMA_MEM_REF sum) {
+    DMA_CTX *ctx = init_ctx(pctx);
+    cc_imm2mem(ctx, 0, 4, CC_CREF("nocarry"), CC_DREF("loadc", next_cb));
+    cc_mem2mem(ctx, 0, 1, c, CC_RREF(1, tfr_len));
+    cc_imm2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (4<<16), CC_CREF("carry"), CC_DREF("loadc", next_cb));
+    CC_LABEL("loadnc", cc_mem2mem(ctx, 0, 1, a, CC_DREF("nocarry", stride)));
+    CC_LABEL("loadc", cc_mem2mem(ctx, 0, 1, a, CC_DREF("carry", stride)));
     // Branch for no carry
-    cb_mem2mem(mp, cb+5, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (2<<16) | 512, lut-512, tmp, cb+7);
-    cb[5].stride = 0xfe00<<16;
+    CC_REF(0).stride = 0xfe00<<16;
+    CC_LABEL("nocarry", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (2<<16) | 512, cc_ofs(lut, -1024), tmp));
+    cc_goto(ctx, CC_CREF("addb"));
     // Branch for carry
-    cb_mem2mem(mp, cb+6, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (2<<16) | 512, lut-511, tmp, cb+7);
-    cb[6].stride = 0xfe00<<16;
+    CC_REF(0).stride = 0xfe00<<16;
+    CC_LABEL("carry", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (2<<16) | 512, cc_ofs(lut, -1022), tmp));
     // Add b
-    cb_mem2mem(mp, cb+7, 0, 1, b, &(cb[8].stride), cb+8);
-    cb_mem2mem(mp, cb+8, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (2<<16) | 2, tmp-2, sum, next_cb);
-    cb[8].stride = 0xfffe<<16;
+    CC_LABEL("addb", cc_mem2mem(ctx, 0, 1, b, CC_RREF(1, stride)));
+    CC_REF(0).stride = 0xfffe<<16;
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (2<<16) | 2, cc_ofs(tmp, -4), sum);
+    cc_ret(ctx);
+    return cc_clean(pctx, ctx);
 }
 
-void cbs_add16(DMA_MEM_MAP *mp, DMA_CB *cb, uint16_t *lut, uint16_t *a, uint16_t *b, uint8_t *c, uint16_t *tmp, uint32_t *sum, DMA_CB *next_cb) {
+DMA_CB *cc_add16(DMA_CTX *pctx, DMA_MEM_REF lut, DMA_MEM_REF a, DMA_MEM_REF b, DMA_MEM_REF c, 
+        DMA_MEM_REF tmp, DMA_MEM_REF sum) {
+    DMA_CTX *ctx = init_ctx(pctx);
+    cc_add8(ctx, lut, a, b, c, tmp, sum);
+    cc_add8(ctx, lut, cc_ofs(a, 1), cc_ofs(b, 1), cc_ofs(sum, 1), tmp, cc_ofs(sum, 1));
+    cc_ret(ctx);
+    return cc_clean(pctx, ctx);
+}
+
+/*void cbs_add16(DMA_MEM_MAP *mp, DMA_CB *cb, uint16_t *lut, uint16_t *a, uint16_t *b, uint8_t *c, uint16_t *tmp, uint32_t *sum, DMA_CB *next_cb) {
     cbs_add8(mp, cb, lut, (uint8_t*)a, (uint8_t*)b, c, tmp, (uint16_t*)sum, cb+9);
     cbs_add8(mp, cb+9, lut, ((uint8_t*)a)+1, ((uint8_t*)b)+1, ((uint8_t*)sum)+1, tmp, (uint16_t*)(((uint8_t*)sum)+1), next_cb);
+}
+
+void cbs_add_pc(DMA_MEM_MAP *mp, DMA_CB *cb, uint16_t *lut, uint32_t ofs, uint16_t *pc, uint16_t *tmp, uint32_t *sum, DMA_CB *next_cb) {
+    cbs_add8(mp, cb, lut, (uint8_t*)(&(cb[1].unused)), (uint8_t*)pc, (uint8_t*)(&(cb[3].unused)), tmp, (uint16_t*)sum, cb+9);
+    cb[1].unused = ofs;
+    cb[3].unused = 0;
+    cbs_add8(mp, cb+9, lut, (uint8_t*)(&(cb[1].unused))+1, ((uint8_t*)pc)+1, ((uint8_t*)sum)+1, tmp, (uint16_t*)(((uint8_t*)sum)+1), cb+18);
+    cbs_add8(mp, cb+18, lut, (uint8_t*)(&(cb[1].unused))+2, (uint8_t*)(&(cb[3].unused)), ((uint8_t*)sum)+2, tmp, (uint16_t*)(((uint8_t*)sum)+2), cb+27);
+    cbs_add8(mp, cb+27, lut, (uint8_t*)(&(cb[1].unused))+3, (uint8_t*)(&(cb[3].unused)), ((uint8_t*)sum)+3, tmp, (uint16_t*)(&(cb[4].unused)), cb+36);
+    cb_mem2mem(mp, cb+36, 0, 1, &(cb[4].unused), ((uint8_t*)sum)+3, next_cb);
+}*/
+
+DMA_MEM_MAP uc_mem;
+
+void done(int sig) {
+    stop_dma(DMA_CHAN);
+    unmap_uncached_mem(&uc_mem);
+    terminate(0);
+    exit(0);
 }
 
 int main() {
@@ -100,27 +145,44 @@ int main() {
     
     DMA_CB *cbs = alloc_uncached_cbs(&uc_mem, 64);
     uint16_t *addlut = alloc_uncached_addlut(&uc_mem);
-    uint8_t *lut_8to32 = alloc_uncached_8to32(&uc_mem);
+    uint8_t *lut_8to64 = alloc_uncached_8to64(&uc_mem);
     uint16_t *tmp = alloc_uncached_uint16(&uc_mem, 256);
     uint8_t *tmp8 = alloc_uncached_uint8(&uc_mem, 256);
     uint32_t *sum = alloc_uncached_uint32(&uc_mem, 1);
     uint16_t *a = alloc_uncached_uint16(&uc_mem, 1);
     uint16_t *b = alloc_uncached_uint16(&uc_mem, 1);
     uint8_t *c = alloc_uncached_uint8(&uc_mem, 1);
-    a[0] = 7344;
-    b[0] = 12532;
-    c[0] = 234;
-    cbs_convert_8to32(&uc_mem, cbs, lut_8to32, c, tmp8, cbs+2);
-    cbs_convert_32to8(&uc_mem, cbs+2, addlut, tmp, tmp8, tmp8+8, 0);
+    a[0] = 27;
+    b[0] = 25677;
+    c[0] = 0;
+    printf("sum should be %04x\n", a[0] + b[0]);
+    //cbs_convert_8to32(&uc_mem, cbs, lut_8to32, c, tmp8, cbs+2);
+    //cbs_convert_32to8(&uc_mem, cbs+2, addlut, tmp, tmp8, tmp8+8, 0);
+    DMA_CTX ctx;
+    ctx.mp = &uc_mem;
+    ctx.start_cb = cbs;
+    ctx.n_cbs = ctx.n_labels = ctx.n_links = 0;
+    ctx.labels = malloc(32*sizeof(DMA_MEM_LABEL));
+    ctx.links = malloc(16*sizeof(DMA_MEM_LINK));
+    //cc_add16(&ctx, CC_MREF(addlut), CC_MREF(a), CC_MREF(b), CC_MREF(c), CC_MREF(tmp), CC_MREF(sum));
+    cc_convert_8to64(&ctx, CC_MREF(lut_8to64), CC_MREF(a), CC_MREF(tmp8));
+    cc_convert_64to8(&ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(tmp8), CC_MREF(tmp8+8));
+    for (int i=0; i < ctx.n_cbs; i++) {
+        printf("%08x: SRCE_AD %08x, DEST_AD %08x, TFR_LEN %08x, STRIDE %08x, UNUSED %08x\n", MEM_BUS_ADDR(&uc_mem, cbs+i), 
+               cbs[i].srce_ad, cbs[i].dest_ad, cbs[i].tfr_len, cbs[i].stride, cbs[i].unused);
+    }
+    free(ctx.labels);
+    free(ctx.links);
 
     enable_dma(DMA_CHAN);
     start_dma(&uc_mem, DMA_CHAN, cbs, 0);
     clock_t start_time = clock();
     while (*REG32(dma_regs, DMA_REG(DMA_CHAN, DMA_CONBLK_AD)));
     clock_t end_time = clock();
-    printf("sum is");
+    printf("result is");
     for (int i=0; i < 8; i++) printf(" %02x", tmp8[i]);
-    printf("\nextracted: %d\n", tmp8[8]);
+    printf("\n");
+    printf("converted: %d\n", tmp8[8]);
     printf("Completed in %luus\n", end_time - start_time);
 
     done(0);
