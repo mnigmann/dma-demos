@@ -6,14 +6,16 @@
 #include "dma_chain.h"
 
 DMA_CTX *init_ctx(DMA_CTX *pctx) {
-    cc_goto(pctx, CC_MREF(pctx->start_cb + pctx->n_cbs));
-    // Instantiate the new context
     DMA_CTX *ctx = malloc(sizeof(DMA_CTX));
-    ctx->mp = pctx->mp;
-    ctx->start_cb = pctx->start_cb + pctx->n_cbs;
+    if (pctx) {
+        cc_goto(pctx, CC_MREF(pctx->start_cb + pctx->n_cbs));
+        ctx->mp = pctx->mp;
+        ctx->start_cb = pctx->start_cb + pctx->n_cbs;
+    }
     ctx->n_cbs = ctx->n_labels = ctx->n_links = 0;
+    ctx->s_labels = ctx->s_links = 16;
     ctx->labels = malloc(16*sizeof(DMA_MEM_LABEL));
-    ctx->links = malloc(32*sizeof(DMA_MEM_LINK));
+    ctx->links = malloc(16*sizeof(DMA_MEM_LINK));
     //printf("allocated %p, %p, and %p\n", ctx->labels, ctx->links, ctx);
     return ctx;
 }
@@ -49,7 +51,22 @@ DMA_CB *cc_imm2mem(DMA_CTX *ctx, uint32_t ti, uint32_t tfr_len, DMA_MEM_REF srce
     return cb;
 }
 
+DMA_CB *cc_dummy(DMA_CTX *ctx) {
+    DMA_CB *cb = ctx->start_cb + ctx->n_cbs;
+    cc_goto(ctx, CC_MREF(cb));
+    cb->ti = 0;
+    cb->tfr_len = 0;
+    cb->next_cb = 0;
+    cc_link(ctx, CC_CREF("__end__"), CC_MREF(&(cb->next_cb)));
+    ctx->n_cbs++;
+    return cb;
+}
+
 void cc_link(DMA_CTX *ctx, DMA_MEM_REF value, DMA_MEM_REF dest) {
+    if (ctx->n_links >= ctx->s_links) {
+        ctx->s_links += 16;
+        ctx->links = realloc(ctx->links, ctx->s_links * sizeof(DMA_MEM_LINK));
+    }
     DMA_MEM_LINK *l = ctx->links + ctx->n_links;
     l->value_name = value.name;
     l->value_ptr = value.ptr;
@@ -60,11 +77,16 @@ void cc_link(DMA_CTX *ctx, DMA_MEM_REF value, DMA_MEM_REF dest) {
     ctx->n_links++;
 }
 
-void cc_label(DMA_CTX *ctx, char *name, DMA_CB *ptr) {
+DMA_CB *cc_label(DMA_CTX *ctx, char *name, DMA_CB *ptr) {
+    if (ctx->n_labels >= ctx->s_labels) {
+        ctx->s_labels += 16;
+        ctx->labels = realloc(ctx->labels, ctx->s_labels * sizeof(DMA_MEM_LABEL));
+    }
     DMA_MEM_LABEL *l = ctx->labels + ctx->n_labels;
     l->name = name;
     l->ptr = ptr;
     ctx->n_labels++;
+    return ptr;
 }
 
 void cc_goto(DMA_CTX *ctx, DMA_MEM_REF target) {
@@ -105,8 +127,14 @@ DMA_CB *cc_clean(DMA_CTX *pctx, DMA_CTX *ctx) {
         link = ctx->links + i;
         if ((link->value_name) && ((strcmp(link->value_name, "__end__") == 0) || (strcmp(link->value_name, "__ret__") == 0))) {
             link->value_name = "__end__";
-            memcpy(pctx->links + pctx->n_links, link, sizeof(DMA_MEM_LINK));
-            pctx->n_links++;
+            if (pctx) {
+                if (pctx->n_links >= pctx->s_links) {
+                    pctx->s_links += 16;
+                    pctx->links = realloc(pctx->links, pctx->s_links * sizeof(DMA_MEM_LINK));
+                }
+                memcpy(pctx->links + pctx->n_links, link, sizeof(DMA_MEM_LINK));
+                pctx->n_links++;
+            }
         } else {
             // Look for the destination first. If it is not found, throw out the link
             if (!(link->dest_ptr)) {
@@ -132,8 +160,15 @@ DMA_CB *cc_clean(DMA_CTX *pctx, DMA_CTX *ctx) {
                     }
                 }
                 if (j == ctx->n_labels) {
-                    memcpy(pctx->links + pctx->n_links, link, sizeof(DMA_MEM_LINK));
-                    pctx->n_links++;
+                    if (!pctx) printf("Unresolved link %s\n", link->value_name);
+                    else {
+                        if (pctx->n_links >= pctx->s_links) {
+                            pctx->s_links += 16;
+                            pctx->links = realloc(pctx->links, pctx->s_links * sizeof(DMA_MEM_LINK));
+                        }
+                        memcpy(pctx->links + pctx->n_links, link, sizeof(DMA_MEM_LINK));
+                        pctx->n_links++;
+                    }
                 }
             }
             //printf("Connecting %s/%p + %d (%08x) to %s/%p + %d\n", link->value_name, link->value_ptr, link->value_offset,
@@ -142,7 +177,7 @@ DMA_CB *cc_clean(DMA_CTX *pctx, DMA_CTX *ctx) {
             *((uint32_t*)(link->dest_ptr + link->dest_offset)) = MEM_BUS_ADDR(ctx->mp, link->value_ptr + link->value_offset);
         }
     }
-    pctx->n_cbs += ctx->n_cbs;
+    if (pctx) pctx->n_cbs += ctx->n_cbs;
     DMA_CB *r = ctx->start_cb;
     //printf("freeing %p, %p, and %p\n", ctx->labels, ctx->links, ctx);
     free(ctx->labels);

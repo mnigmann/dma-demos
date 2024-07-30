@@ -52,7 +52,7 @@ DMA_CB *cc_convert_64to8(DMA_CTX *pctx, DMA_MEM_REF lut, DMA_MEM_REF tmp, DMA_ME
     DMA_CTX *ctx = init_ctx(pctx);
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2*256, lut, tmp);
     CC_REF(0).stride = ((0x10000 - 33)<<16);
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (8<<16) | 1, value, CC_RREF(8, tfr_len));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (7<<16) | 1, value, CC_RREF(8, tfr_len));
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (256<<16), cc_ofs(tmp, 256), tmp);
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (128<<16), cc_ofs(tmp, 128), tmp);
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (64<<16), cc_ofs(tmp, 64), tmp);
@@ -62,6 +62,16 @@ DMA_CB *cc_convert_64to8(DMA_CTX *pctx, DMA_MEM_REF lut, DMA_MEM_REF tmp, DMA_ME
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (4<<16), cc_ofs(tmp, 4), tmp);
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (2<<16), cc_ofs(tmp, 2), tmp);
     cc_mem2mem(ctx, 0, 1, tmp, target);
+    cc_ret(ctx);
+    return cc_clean(pctx, ctx);
+}
+
+DMA_CB *cc_combined_shift(DMA_CTX *pctx, DMA_MEM_REF lut, uint8_t size, DMA_MEM_REF value, uint8_t nbits) {
+    DMA_CTX *ctx = init_ctx(pctx);
+    CC_REF(0).stride = ((0x10000 - 33)<<16);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, ((nbits-1)<<16) | 1, value, CC_RREF(nbits, tfr_len));
+    for (uint8_t i=0; i < nbits; i++)
+        cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (size << (15 + nbits - i)), cc_ofs(lut, (size<<(nbits - i - 1))), lut);
     cc_ret(ctx);
     return cc_clean(pctx, ctx);
 }
@@ -114,6 +124,20 @@ DMA_CB *cc_add16(DMA_CTX *pctx, DMA_MEM_REF lut, DMA_MEM_REF a, DMA_MEM_REF b, D
     return cc_clean(pctx, ctx);
 }
 
+DMA_CB *cc_add_pc(DMA_CTX *pctx, DMA_MEM_REF lut, DMA_MEM_REF ofs, DMA_MEM_REF pc, DMA_MEM_REF tmp, DMA_MEM_REF sum) {
+    DMA_CTX *ctx = init_ctx(pctx);
+    DMA_MEM_REF zero_ref = CC_RREF(3, unused);
+    DMA_MEM_REF tmp_ref = CC_RREF(4, unused);
+    CC_REF(3).unused = 0;
+    cc_add8(ctx, lut, ofs, pc, zero_ref, tmp, sum);
+    cc_add8(ctx, lut, cc_ofs(ofs, 1), cc_ofs(pc, 1), cc_ofs(sum, 1), tmp, cc_ofs(sum, 1));
+    cc_add8(ctx, lut, cc_ofs(ofs, 2), zero_ref, cc_ofs(sum, 2), tmp, cc_ofs(sum, 2));
+    cc_add8(ctx, lut, cc_ofs(ofs, 3), zero_ref, cc_ofs(sum, 3), tmp, tmp_ref);
+    cc_mem2mem(ctx, 0, 1, tmp_ref, cc_ofs(sum, 3));
+    cc_ret(ctx);
+    return cc_clean(pctx, ctx);
+}
+
 /*void cbs_add16(DMA_MEM_MAP *mp, DMA_CB *cb, uint16_t *lut, uint16_t *a, uint16_t *b, uint8_t *c, uint16_t *tmp, uint32_t *sum, DMA_CB *next_cb) {
     cbs_add8(mp, cb, lut, (uint8_t*)a, (uint8_t*)b, c, tmp, (uint16_t*)sum, cb+9);
     cbs_add8(mp, cb+9, lut, ((uint8_t*)a)+1, ((uint8_t*)b)+1, ((uint8_t*)sum)+1, tmp, (uint16_t*)(((uint8_t*)sum)+1), next_cb);
@@ -129,7 +153,7 @@ void cbs_add_pc(DMA_MEM_MAP *mp, DMA_CB *cb, uint16_t *lut, uint32_t ofs, uint16
     cb_mem2mem(mp, cb+36, 0, 1, &(cb[4].unused), ((uint8_t*)sum)+3, next_cb);
 }*/
 
-DMA_MEM_MAP uc_mem;
+/*DMA_MEM_MAP uc_mem;
 
 void done(int sig) {
     stop_dma(DMA_CHAN);
@@ -158,21 +182,17 @@ int main() {
     printf("sum should be %04x\n", a[0] + b[0]);
     //cbs_convert_8to32(&uc_mem, cbs, lut_8to32, c, tmp8, cbs+2);
     //cbs_convert_32to8(&uc_mem, cbs+2, addlut, tmp, tmp8, tmp8+8, 0);
-    DMA_CTX ctx;
-    ctx.mp = &uc_mem;
-    ctx.start_cb = cbs;
-    ctx.n_cbs = ctx.n_labels = ctx.n_links = 0;
-    ctx.labels = malloc(32*sizeof(DMA_MEM_LABEL));
-    ctx.links = malloc(16*sizeof(DMA_MEM_LINK));
+    DMA_CTX *ctx = init_ctx(NULL);
+    ctx->mp = &uc_mem;
+    ctx->start_cb = cbs;
     //cc_add16(&ctx, CC_MREF(addlut), CC_MREF(a), CC_MREF(b), CC_MREF(c), CC_MREF(tmp), CC_MREF(sum));
-    cc_convert_8to64(&ctx, CC_MREF(lut_8to64), CC_MREF(a), CC_MREF(tmp8));
-    cc_convert_64to8(&ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(tmp8), CC_MREF(tmp8+8));
-    for (int i=0; i < ctx.n_cbs; i++) {
+    cc_convert_8to64(ctx, CC_MREF(lut_8to64), CC_MREF(a), CC_MREF(tmp8));
+    cc_convert_64to8(ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(tmp8), CC_MREF(tmp8+8));
+    for (int i=0; i < ctx->n_cbs; i++) {
         printf("%08x: SRCE_AD %08x, DEST_AD %08x, TFR_LEN %08x, STRIDE %08x, UNUSED %08x\n", MEM_BUS_ADDR(&uc_mem, cbs+i), 
                cbs[i].srce_ad, cbs[i].dest_ad, cbs[i].tfr_len, cbs[i].stride, cbs[i].unused);
     }
-    free(ctx.labels);
-    free(ctx.links);
+    cc_clean(NULL, ctx);
 
     enable_dma(DMA_CHAN);
     start_dma(&uc_mem, DMA_CHAN, cbs, 0);
@@ -187,4 +207,4 @@ int main() {
 
     done(0);
     return 0;
-}
+}*/

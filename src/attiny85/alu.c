@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include "alu.h"
+#include "dma_chain.h"
 
 #define DMA_CHAN 5
 
@@ -45,58 +46,63 @@ uint32_t *alloc_uncached_alucon(DMA_MEM_MAP *mp, DMA_CB *alu_root, uint8_t mode)
     return alucon;
 }
 
-uint32_t cbs_alu8(DMA_MEM_MAP *mp, DMA_CB *cb, uint8_t *alu_lut, uint8_t *rd, uint8_t *rr, uint8_t *carry, 
-                  uint32_t *alucon_sr, uint8_t *alu_lut_sr, uint8_t *sreg, DMA_CB *next_cb) {
+DMA_CB *cc_alu8(DMA_CTX *pctx, DMA_MEM_REF alu_lut, DMA_MEM_REF rd, DMA_MEM_REF rr, DMA_MEM_REF carry, 
+                DMA_MEM_REF alucon_sr, DMA_MEM_REF alu_lut_sr, DMA_MEM_REF sreg) {
+    DMA_CTX *ctx = init_ctx(pctx);
     // Load alu_lut_sr
-    cb_mem2mem(mp, cb, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 12, alu_lut, alu_lut_sr, cb+1);
+    cc_label(ctx, "loop", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 12, alu_lut, alu_lut_sr));
     // Add bit from rd
-    cb_mem2mem(mp, cb+1, 0, 1, rd, &(cb[2].tfr_len), cb+2);
-    cb_mem2mem(mp, cb+2, DMA_TDMODE | DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 9<<16, alu_lut_sr+3, alu_lut_sr, cb+3);
+    cc_mem2mem(ctx, 0, 1, rd, CC_RREF(1, tfr_len));
+    cc_mem2mem(ctx, DMA_TDMODE | DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8<<16, cc_ofs(alu_lut_sr, 3), alu_lut_sr);
     // Add bit from rr
-    cb_mem2mem(mp, cb+3, 0, 1, rr, &(cb[4].tfr_len), cb+4);
-    cb_mem2mem(mp, cb+4, DMA_TDMODE | DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 9<<16, alu_lut_sr+3, alu_lut_sr, cb+5);
+    cc_mem2mem(ctx, 0, 1, rr, CC_RREF(1, tfr_len));
+    cc_mem2mem(ctx, DMA_TDMODE | DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8<<16, cc_ofs(alu_lut_sr, 3), alu_lut_sr);
     // Add carry bit
-    cb_mem2mem(mp, cb+5, 0, 1, carry, &(cb[6].tfr_len), cb+6);
-    cb_mem2mem(mp, cb+6, DMA_TDMODE | DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 9<<16, alu_lut_sr+3, alu_lut_sr, cb+7);
+    cc_mem2mem(ctx, 0, 1, carry, CC_RREF(1, tfr_len));
+    cc_mem2mem(ctx, DMA_TDMODE | DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8<<16, cc_ofs(alu_lut_sr, 3), alu_lut_sr);
     // Load pointer from alucon_sr into next_cb
-    cb_mem2mem(mp, cb+7, 0, 4, alucon_sr, &(cb[11].next_cb), cb+8);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, alucon_sr, CC_DREF("jump", next_cb));
     // Shift alucon_sr
-    cb_mem2mem(mp, cb+8, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 28, alucon_sr+1, alucon_sr, cb+9);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 28, cc_ofs(alucon_sr, 4), alucon_sr);
     // Shift rd
-    cb_mem2mem(mp, cb+9, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 7, rd+1, rd, cb+10);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 7, cc_ofs(rd, 1), rd);
     // Shift rr
-    cb_mem2mem(mp, cb+10, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 7, rr+1, rr, cb+11);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 7, cc_ofs(rr, 1), rr);
     // Store result
-    cb_mem2mem(mp, cb+11, 0, 1, alu_lut_sr, rd+7, cb);
+    cc_label(ctx, "jump", cc_mem2mem(ctx, 0, 1, alu_lut_sr, cc_ofs(rd, 7)));
     // ALU_BW:
     //     goto cb[0]
     // ALU_STORE_HALF_CARRY:
     //     Store carry to H bit
-    cb_mem2mem(mp, cb+12, 0, 1, alu_lut_sr+1, sreg+5, cb+13);
+    cc_mem2mem(ctx, 0, 1, cc_ofs(alu_lut_sr, 1), cc_ofs(sreg, 5));
     // ALU:
     //     Store carry
     //     goto cb[0]
-    cb_mem2mem(mp, cb+13, 0, 1, alu_lut_sr+1, carry, cb);
+    cc_mem2mem(ctx, 0, 1, cc_ofs(alu_lut_sr, 1), carry);
+    cc_goto(ctx, CC_CREF("loop"));
     // ALU_STORE_CARRY:
     //     Store carry to C bit
-    cb_mem2mem(mp, cb+14, 0, 1, alu_lut_sr+1, sreg, cb+15);
+    cc_mem2mem(ctx, 0, 1, cc_ofs(alu_lut_sr, 1), sreg);
     //     Store carry
     //     break
-    cb_mem2mem(mp, cb+15, 0, 1, alu_lut_sr+1, carry, next_cb);
-    return 16;
+    cc_mem2mem(ctx, 0, 1, cc_ofs(alu_lut_sr, 1), carry);
+    cc_ret(ctx);
+    return cc_clean(pctx, ctx);
 }
 
-uint32_t cbs_inv(DMA_MEM_MAP *mp, DMA_CB *cb, uint8_t *src, uint8_t *dest, uint8_t nbits, DMA_CB *next_cb) {
-    cb_mem2mem(mp, cb, DMA_CB_DEST_INC | DMA_CB_SRCE_INC | DMA_TDMODE, (nbits<<16) | 1, &(cb[0].unused), dest, cb+1);
-    cb[0].stride = 0xffff;
-    cb[0].unused = 0x01010101;
-    cb_mem2mem(mp, cb+1, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (nbits<<16) | 1, src, &(cb[2].tfr_len), cb+2);
-    cb[1].unused = 0;
-    cb[1].stride = (31 << 16);
+DMA_CB *cc_inv(DMA_CTX *pctx, DMA_MEM_REF src, DMA_MEM_REF dest, uint8_t nbits) {
+    DMA_CTX *ctx = init_ctx(pctx);
+    CC_REF(0).unused = 0;
+    CC_REF(0).stride = (31 << 16);
+    cc_label(ctx, "zero", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, ((nbits-1)<<16) | 1, src, CC_RREF(2, tfr_len)));
+    CC_REF(0).stride = 0xffff;
+    CC_REF(0).unused = 0x01010101;
+    cc_mem2mem(ctx, DMA_CB_DEST_INC | DMA_CB_SRCE_INC | DMA_TDMODE, ((nbits-1)<<16) | 1, CC_RREF(0, unused), dest);
     for (uint8_t i=0; i < nbits; i++) {
-        cb_mem2mem(mp, cb+2+i, 0, 0, &(cb[1].unused), dest+i, cb+3+i);
+        cc_mem2mem(ctx, 0, 0, CC_DREF("zero", unused), cc_ofs(dest, i));
     }
-    cb[2+nbits].next_cb = (next_cb ? MEM_BUS_ADDR(mp, next_cb) : 0);
+    cc_ret(ctx);
+    return cc_clean(pctx, ctx);
 }
 
 /*DMA_MEM_MAP uc_mem;
@@ -118,6 +124,7 @@ int main(void) {
     load_bits(0b11011001, rd);
     uint8_t *rr = alloc_uncached_uint8(&uc_mem, 8);
     load_bits(0b10101011, rr);
+    printf("rd: %02x, rr: %02x, sum: %04x\n", extract_bits(rd), extract_bits(rr), (uint16_t)extract_bits(rd) + extract_bits(rr));
     uint32_t *alucon = alloc_uncached_alucon(&uc_mem, cbs+1, ALUCON_CZNVSH);
     uint32_t *alucon_sr = alloc_uncached_uint32(&uc_mem, 8);
     uint8_t *alu_lut = alloc_uncached_uint8(&uc_mem, 12);
@@ -130,9 +137,19 @@ int main(void) {
     uint8_t *carry = alloc_uncached_uint8(&uc_mem, 1);
     sreg[0] = 0;
 
-    cb_mem2mem(&uc_mem, cbs, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 32, alucon, alucon_sr, cbs+1);
-    printf("alucon final part: %08x, alu_root %08x\n", alucon[7], MEM_BUS_ADDR(&uc_mem, cbs+1));
-    cbs_alu8(&uc_mem, cbs+1, alu_lut, rd, rr, carry, alucon_sr, alu_lut_sr, sreg, 0);
+    DMA_CTX ctx;
+    ctx.mp = &uc_mem;
+    ctx.start_cb = cbs;
+    ctx.n_cbs = ctx.n_labels = ctx.n_links = 0;
+    ctx.labels = malloc(32*sizeof(DMA_MEM_LABEL));
+    ctx.links = malloc(16*sizeof(DMA_MEM_LINK));
+
+    cc_mem2mem(&ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 32, CC_MREF(alucon), CC_MREF(alucon_sr));
+    //printf("alucon final part: %08x, alu_root %08x\n", alucon[7], MEM_BUS_ADDR(&uc_mem, cbs+1));
+    cc_alu8(&ctx, CC_MREF(alu_lut), CC_MREF(rd), CC_MREF(rr), CC_MREF(carry), CC_MREF(alucon_sr), CC_MREF(alu_lut_sr), CC_MREF(sreg));
+
+    free(ctx.labels);
+    free(ctx.links);
 
 
     enable_dma(DMA_CHAN);

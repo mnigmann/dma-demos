@@ -43,16 +43,19 @@ typedef struct {
     uint8_t ret;
     int n_labels;
     int n_links;
+    int s_labels;
+    int s_links;
     struct DMA_MEM_LABEL_S *labels;
     struct DMA_MEM_LINK_S *links;
 } DMA_CTX;
 
 DMA_MEM_REF new_ref(char *name, void *ptr, uint32_t offset);
 void cc_link(DMA_CTX *ctx, DMA_MEM_REF value, DMA_MEM_REF dest);
-void cc_label(DMA_CTX *ctx, char *name, DMA_CB *cb);
+DMA_CB *cc_label(DMA_CTX *ctx, char *name, DMA_CB *cb);
 
 DMA_CB *cc_imm2mem(DMA_CTX *ctx, uint32_t ti, uint32_t tfr_len, DMA_MEM_REF srce, DMA_MEM_REF dest);
 DMA_CB *cc_mem2mem(DMA_CTX *ctx, uint32_t ti, uint32_t tfr_len, DMA_MEM_REF srce, DMA_MEM_REF dest);
+DMA_CB *cc_dummy(DMA_CTX *ctx);
 
 DMA_CTX *init_ctx(DMA_CTX *pctx);
 void cc_goto(DMA_CTX *ctx, DMA_MEM_REF target);
