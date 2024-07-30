@@ -86,6 +86,8 @@ DMA_CB *cc_alu8(DMA_CTX *pctx, DMA_MEM_REF alu_lut, DMA_MEM_REF rd, DMA_MEM_REF 
     //     Store carry
     //     break
     cc_mem2mem(ctx, 0, 1, cc_ofs(alu_lut_sr, 1), carry);
+    // Store N bit
+    cc_mem2mem(ctx, 0, 1, cc_ofs(rd, 7), cc_ofs(sreg, 2));
     cc_ret(ctx);
     return cc_clean(pctx, ctx);
 }

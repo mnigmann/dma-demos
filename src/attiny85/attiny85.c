@@ -90,9 +90,12 @@ int main(void) {
     //prog[wpc++] = 0b0000111100000001;   // ADD r16, r17
     //prog[wpc++] = 0b0010111100100000;   // MOV r18, r16
     //prog[wpc++] = 0b0001111110001001;   // ADC r24, r25
-    prog[wpc++] = 0b0001101100001000;   // SUB r16, r24
-    prog[wpc++] = 0b0000101100011001;   // SBC r17, r25
+    //prog[wpc++] = 0b0001101100001000;   // SUB r16, r24
+    //prog[wpc++] = 0b0000101100011001;   // SBC r17, r25
     //prog[wpc++] = 0b1110101000110101;   // LDI r19, 0xa5
+    prog[wpc++] = 0b1110100100001100;   // LDI r16, -100
+    prog[wpc++] = 0b1110011000010100;   // LDI r17, 100
+    prog[wpc++] = 0b0001101100000001;   // SUB r16, r17
     prog[wpc++] = 0;
     uint8_t *regfile = alloc_uncached_uint8(&uc_mem, 32*8);
     load_bits(0xaa, regfile);
@@ -117,6 +120,10 @@ int main(void) {
     alu_lut[6] = 0; alu_lut[7] = 1; alu_lut[8] = 1;
     alu_lut[9] = 1; alu_lut[10] = 1; alu_lut[11] = 1;
     uint8_t *alu_lut_sr = alloc_uncached_uint8(&uc_mem, 12);
+    uint8_t *flag_lut = alloc_uncached_uint8(&uc_mem, 16);
+    memset(flag_lut, 0, 16);
+    flag_lut[2] = flag_lut[7] = flag_lut[11] = 1;
+    flag_lut[12] = flag_lut[13] = flag_lut[15] = 1;
     uint8_t *sreg = alloc_uncached_uint8(&uc_mem, 8);
     uint8_t *carry = alloc_uncached_uint8(&uc_mem, 1);
     
@@ -153,10 +160,13 @@ int main(void) {
     // Clear internal ALU carry bit
     CC_REF(0).unused = 0;
     DMA_CB *cbptr_jump_load1 = cc_label(ctx, "jump_load1", cc_mem2mem(ctx, 0, 1, CC_RREF(0, unused), CC_MREF(carry)));
+
+
     // FIRST LOAD
     // Subroutine for loading the carry bit
     DMA_CB *cbptr_load_carry = cc_mem2mem(ctx, 0, 1, CC_MREF(sreg), CC_MREF(carry));
     cc_goto(ctx, CC_CREF("jump_load2"));
+
 
     // SECOND LOAD
     // Dummy block for jumping to the desired loader
@@ -178,6 +188,13 @@ int main(void) {
     DMA_CB *cbptr_load_k = cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(instr), CC_MREF(rr));
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(instr+8), CC_MREF(rr+4));
 
+    // Subroutine for loading Rd from the upper registers only
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 16*8, CC_MREF(regfile+16*8), CC_MREF(tmp8));
+    cc_combined_shift(ctx, CC_MREF(tmp8), 8, CC_MREF(instr+4), 4);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, CC_MREF(tmp8), CC_MREF(rd));
+    cc_goto(ctx, CC_CREF("jump_oper"));
+
+
     // OPERATION
     // Dummy block for jumping to the desired operation
     DMA_CB *cbptr_jump_oper = cc_label(ctx, "jump_oper", cc_dummy(ctx));
@@ -193,10 +210,14 @@ int main(void) {
     cc_goto(ctx, CC_CREF("alu_begin"));
 
     // Internal ALU subroutine
-    uint32_t *alucon = alloc_uncached_alucon(&uc_mem, &CC_REF(1), ALUCON_CZNVSH);
+    uint32_t *alucon = alloc_uncached_alucon(&uc_mem, &CC_REF(6), ALUCON_CZNVSH);
     DMA_CB *cbptr_oper_alu = cc_label(ctx, "alu_begin", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 32, CC_MREF(alucon), CC_MREF(alucon_sr)));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 16, CC_MREF(flag_lut), CC_MREF(tmp8));
+    cc_combined_shift(ctx, CC_MREF(tmp8), 8, CC_MREF(rd+7), 1);
+    cc_combined_shift(ctx, CC_MREF(tmp8), 4, CC_MREF(rr+7), 1);
     cc_alu8(ctx, CC_MREF(alu_lut), CC_MREF(rd), CC_MREF(rr), CC_MREF(carry), CC_MREF(alucon_sr), CC_MREF(alu_lut_sr), CC_MREF(sreg));
-    cc_label(ctx, "alu_end", &CC_REF(-1));
+    cc_combined_shift(ctx, CC_MREF(tmp8), 2, CC_MREF(rd+7), 1);
+    cc_label(ctx, "alu_end", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2, CC_MREF(tmp8), CC_MREF(sreg+3)));
     cc_goto(ctx, CC_CREF("jump_store"));
 
     // Internal subroutine for negating the carry bit
@@ -206,6 +227,7 @@ int main(void) {
     // Subroutine for moving Rr to Rd
     DMA_CB *cbptr_oper_mov = cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, CC_MREF(rr), CC_MREF(rd));
     cc_goto(ctx, CC_CREF("jump_store"));
+
 
     // STORE
     // Dummy block for jumping to the desired operation
@@ -234,12 +256,14 @@ int main(void) {
     cc_clean(NULL, ctx);
     
     define_instruction(&uc_mem, instr_lut, 0b00000000, 0b00000000, NULL, NULL, NULL, NULL);
-    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00001000, cbptr_load_carry, cbptr_load_rd, cbptr_oper_alusub, cbptr_store_d);
-    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00001100, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_alu, cbptr_store_d);
-    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00011000, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_alusub, cbptr_store_d);
-    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00011100, cbptr_load_carry, cbptr_load_rd, cbptr_oper_alu, cbptr_store_d);
-    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00101100, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_mov, cbptr_store_d);
-    define_instruction(&uc_mem, instr_lut, 0b11110000, 0b11100000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_mov, cbptr_store_ud);
+    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00001000, cbptr_load_carry, cbptr_load_rd, cbptr_oper_alusub, cbptr_store_d);      // SBC
+    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00001100, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_aluadd, cbptr_store_d);      // ADD
+    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00011000, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_alusub, cbptr_store_d);      // SUB
+    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00011100, cbptr_load_carry, cbptr_load_rd, cbptr_oper_aluadd, cbptr_store_d);      // ADC
+    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00101100, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_mov, cbptr_store_d);         // MOV
+    define_instruction(&uc_mem, instr_lut, 0b11110000, 0b01000000, cbptr_load_carry, cbptr_load_k, cbptr_oper_alusub, cbptr_store_ud);      // SBCI
+    define_instruction(&uc_mem, instr_lut, 0b11110000, 0b01010000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_alusub, cbptr_store_ud);      // SUBI
+    define_instruction(&uc_mem, instr_lut, 0b11110000, 0b11100000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_mov, cbptr_store_ud);         // LDI
 
     print_regfile(regfile);
     enable_dma(DMA_CHAN);
