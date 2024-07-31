@@ -28,18 +28,18 @@ uint8_t extract_bits(uint8_t *buf) {
 void populate_alucon(DMA_MEM_MAP *mp, uint32_t *alucon, DMA_CB *alu_root, uint8_t mode) {
     switch (mode) {
         case ALUCON_ZNVS:
-            for (uint8_t i=0; i < 7; i++) alucon[i] = MEM_BUS_ADDR(mp, alu_root);
-            alucon[7] = alu_root[15].next_cb;
+            for (uint8_t i=0; i < 7; i++) alucon[i] = MEM_BUS_ADDR(mp, alu_root+1);
+            alucon[7] = alu_root[18].next_cb;
             break;
         case ALUCON_CZNVS:
-            for (uint8_t i=0; i < 7; i++) alucon[i] = MEM_BUS_ADDR(mp, alu_root+13);
-            alucon[7] = MEM_BUS_ADDR(mp, alu_root+14);
+            for (uint8_t i=0; i < 15; i++) alucon[i] = MEM_BUS_ADDR(mp, alu_root+16);
+            alucon[15] = MEM_BUS_ADDR(mp, alu_root+17);
             break;
         case ALUCON_CZNVSH:
         default:
-            for (uint8_t i=0; i < 7; i++) alucon[i] = MEM_BUS_ADDR(mp, alu_root+13);
-            alucon[7] = MEM_BUS_ADDR(mp, alu_root+14);
-            alucon[3] = MEM_BUS_ADDR(mp, alu_root+12);
+            for (uint8_t i=0; i < 7; i++) alucon[i] = MEM_BUS_ADDR(mp, alu_root+16);
+            alucon[7] = MEM_BUS_ADDR(mp, alu_root+17);
+            alucon[3] = MEM_BUS_ADDR(mp, alu_root+15);
             break;
     }
 }
@@ -47,6 +47,9 @@ void populate_alucon(DMA_MEM_MAP *mp, uint32_t *alucon, DMA_CB *alu_root, uint8_
 DMA_CB *cc_alu8(DMA_CTX *pctx, DMA_MEM_REF alu_lut, DMA_MEM_REF rd, DMA_MEM_REF rr, DMA_MEM_REF carry, 
                 DMA_MEM_REF alucon_sr, DMA_MEM_REF alu_lut_sr, DMA_MEM_REF sreg) {
     DMA_CTX *ctx = init_ctx(pctx);
+    // Prepare Z bit
+    CC_REF(0).unused = 1;
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 1, CC_RREF(0, unused), cc_ofs(sreg, 1));
     // Load alu_lut_sr
     cc_label(ctx, "loop", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 12, alu_lut, alu_lut_sr));
     // Add bit from rd
@@ -61,13 +64,18 @@ DMA_CB *cc_alu8(DMA_CTX *pctx, DMA_MEM_REF alu_lut, DMA_MEM_REF rd, DMA_MEM_REF 
     // Load pointer from alucon_sr into next_cb
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, alucon_sr, CC_DREF("jump", next_cb));
     // Shift alucon_sr
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 28, cc_ofs(alucon_sr, 4), alucon_sr);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 60, cc_ofs(alucon_sr, 4), alucon_sr);
     // Shift rd
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 7, cc_ofs(rd, 1), rd);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 15, cc_ofs(rd, 1), rd);
     // Shift rr
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 7, cc_ofs(rr, 1), rr);
-    // Store result
-    cc_label(ctx, "jump", cc_mem2mem(ctx, 0, 1, alu_lut_sr, cc_ofs(rd, 7)));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 15, cc_ofs(rr, 1), rr);
+    // Load result bit (12)
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 1, alu_lut_sr, CC_RREF(1, tfr_len));
+    // Update Z bit (13)
+    CC_REF(0).unused = 0;
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 0, CC_RREF(0, unused), cc_ofs(sreg, 1));
+    // Store result (14)
+    cc_label(ctx, "jump", cc_mem2mem(ctx, 0, 1, CC_RREF(-1, tfr_len), cc_ofs(rd, 7)));
     // ALU_BW:
     //     goto cb[0]
     // ALU_STORE_HALF_CARRY:
