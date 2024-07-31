@@ -93,9 +93,11 @@ int main(void) {
     //prog[wpc++] = 0b0001101100001000;   // SUB r16, r24
     //prog[wpc++] = 0b0000101100011001;   // SBC r17, r25
     //prog[wpc++] = 0b1110101000110101;   // LDI r19, 0xa5
-    prog[wpc++] = 0b1110100100001100;   // LDI r16, -100
-    prog[wpc++] = 0b1110011000010100;   // LDI r17, 100
-    prog[wpc++] = 0b0001101100000001;   // SUB r16, r17
+    //prog[wpc++] = 0b1110100100001100;   // LDI r16, -100
+    //prog[wpc++] = 0b1110011000010100;   // LDI r17, 100
+    //prog[wpc++] = 0b0001011100000001;   // SUB r16, r17
+    prog[wpc++] = 0b0110100100001100;   // ORI r16, 0x9c
+    prog[wpc++] = 0b0111011000010100;   // ANDI r17, 0x64
     prog[wpc++] = 0;
     uint8_t *regfile = alloc_uncached_uint8(&uc_mem, 32*8);
     load_bits(0xaa, regfile);
@@ -113,6 +115,8 @@ int main(void) {
     // alu.c
     uint8_t *rd = alloc_uncached_uint8(&uc_mem, 8);
     uint8_t *rr = alloc_uncached_uint8(&uc_mem, 8);
+    uint32_t *alucon_arithmetic = alloc_uncached_uint32(&uc_mem, 8);
+    uint32_t *alucon_bitwise = alloc_uncached_uint32(&uc_mem, 8);
     uint32_t *alucon_sr = alloc_uncached_uint32(&uc_mem, 8);
     uint8_t *alu_lut = alloc_uncached_uint8(&uc_mem, 12);
     alu_lut[0] = 0; alu_lut[1] = 0; alu_lut[2] = 0;
@@ -203,25 +207,42 @@ int main(void) {
     DMA_CB *cbptr_oper_alusub = cc_inv(ctx, CC_MREF(rr), CC_MREF(rr), 8);
     cc_inv(ctx, CC_MREF(carry), CC_MREF(carry), 1);
     cc_imm2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_CREF("negate_carry"), CC_DREF("alu_end", next_cb));
-    cc_goto(ctx, CC_CREF("alu_begin"));
 
     // Subroutine for addition
-    DMA_CB *cbptr_oper_aluadd = cc_imm2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_CREF("jump_store"), CC_DREF("alu_end", next_cb));
+    DMA_CB *cbptr_oper_aluadd = cc_imm2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(alu_lut_sr), cc_ofs(CC_DREF("alu_root", srce_ad), 11*32));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 32, CC_MREF(alucon_arithmetic), CC_MREF(alucon_sr));
     cc_goto(ctx, CC_CREF("alu_begin"));
 
+    // Subroutine for XOR
+    DMA_CB *cbptr_oper_aluxor = cc_imm2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(alu_lut_sr), cc_ofs(CC_DREF("alu_root", srce_ad), 11*32));
+    cc_goto(ctx, CC_CREF("alu_load_bw"));
+
+    // Subroutine for AND
+    DMA_CB *cbptr_oper_aluand = cc_imm2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(alu_lut_sr+1), cc_ofs(CC_DREF("alu_root", srce_ad), 11*32));
+    cc_goto(ctx, CC_CREF("alu_load_bw"));
+
+    // Subroutine for OR
+    DMA_CB *cbptr_oper_aluor = cc_imm2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(alu_lut_sr+2), cc_ofs(CC_DREF("alu_root", srce_ad), 11*32));
+    cc_goto(ctx, CC_CREF("alu_load_bw"));
+
+    // Internal subroutine for loading alucon
+    cc_label(ctx, "alu_load_bw", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 32, CC_MREF(alucon_bitwise), CC_MREF(alucon_sr)));
+    
     // Internal ALU subroutine
-    uint32_t *alucon = alloc_uncached_alucon(&uc_mem, &CC_REF(6), ALUCON_CZNVSH);
-    DMA_CB *cbptr_oper_alu = cc_label(ctx, "alu_begin", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 32, CC_MREF(alucon), CC_MREF(alucon_sr)));
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 16, CC_MREF(flag_lut), CC_MREF(tmp8));
+    cc_label(ctx, "alu_begin", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 16, CC_MREF(flag_lut), CC_MREF(tmp8)));
     cc_combined_shift(ctx, CC_MREF(tmp8), 8, CC_MREF(rd+7), 1);
     cc_combined_shift(ctx, CC_MREF(tmp8), 4, CC_MREF(rr+7), 1);
-    cc_alu8(ctx, CC_MREF(alu_lut), CC_MREF(rd), CC_MREF(rr), CC_MREF(carry), CC_MREF(alucon_sr), CC_MREF(alu_lut_sr), CC_MREF(sreg));
+    DMA_CB *cbptr_alu_root = cc_label(ctx, "alu_root", cc_alu8(ctx, CC_MREF(alu_lut), CC_MREF(rd), CC_MREF(rr), CC_MREF(carry), 
+                                     CC_MREF(alucon_sr), CC_MREF(alu_lut_sr), CC_MREF(sreg)));
     cc_combined_shift(ctx, CC_MREF(tmp8), 2, CC_MREF(rd+7), 1);
     cc_label(ctx, "alu_end", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2, CC_MREF(tmp8), CC_MREF(sreg+3)));
     cc_goto(ctx, CC_CREF("jump_store"));
+    populate_alucon(&uc_mem, alucon_arithmetic, cbptr_alu_root, ALUCON_CZNVSH);
+    populate_alucon(&uc_mem, alucon_bitwise, cbptr_alu_root, ALUCON_ZNVS);
 
     // Internal subroutine for negating the carry bit
     cc_label(ctx, "negate_carry", cc_inv(ctx, CC_MREF(sreg), CC_MREF(sreg), 1));
+    cc_imm2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_CREF("jump_store"), CC_DREF("alu_end", next_cb));
     cc_goto(ctx, CC_CREF("jump_store"));
 
     // Subroutine for moving Rr to Rd
@@ -248,7 +269,7 @@ int main(void) {
     cc_goto(ctx, CC_CREF("finish"));
 
     // INCREMENT COUNTER
-    cc_label(ctx, "finish", cc_add16(ctx, CC_MREF(addlut), CC_MREF(pc), CC_MREF(pc_incr), CC_MREF(zero), CC_MREF(tmp), CC_MREF(pc)));
+    DMA_CB *cbptr_finish = cc_label(ctx, "finish", cc_add16(ctx, CC_MREF(addlut), CC_MREF(pc), CC_MREF(pc_incr), CC_MREF(zero), CC_MREF(tmp), CC_MREF(pc)));
     cc_goto(ctx, CC_CREF("begin"));
 
     printf("Total number of CBs: %d, total memory %08x\n", ctx->n_cbs, uc_mem.len);
@@ -256,13 +277,21 @@ int main(void) {
     cc_clean(NULL, ctx);
     
     define_instruction(&uc_mem, instr_lut, 0b00000000, 0b00000000, NULL, NULL, NULL, NULL);
+    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00000100, cbptr_load_carry, cbptr_load_rd, cbptr_oper_alusub, cbptr_finish);       // CPC
     define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00001000, cbptr_load_carry, cbptr_load_rd, cbptr_oper_alusub, cbptr_store_d);      // SBC
     define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00001100, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_aluadd, cbptr_store_d);      // ADD
+    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00010100, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_alusub, cbptr_finish);       // CP
     define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00011000, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_alusub, cbptr_store_d);      // SUB
     define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00011100, cbptr_load_carry, cbptr_load_rd, cbptr_oper_aluadd, cbptr_store_d);      // ADC
+    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00100000, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_aluand, cbptr_store_d);      // AND
+    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00100100, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_aluxor, cbptr_store_d);      // EOR
+    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00101000, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_aluor, cbptr_store_d);       // OR
     define_instruction(&uc_mem, instr_lut, 0b11111100, 0b00101100, cbptr_jump_load2, cbptr_load_rd, cbptr_oper_mov, cbptr_store_d);         // MOV
+    define_instruction(&uc_mem, instr_lut, 0b11110000, 0b00110000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_alusub, cbptr_finish);        // CPI
     define_instruction(&uc_mem, instr_lut, 0b11110000, 0b01000000, cbptr_load_carry, cbptr_load_k, cbptr_oper_alusub, cbptr_store_ud);      // SBCI
     define_instruction(&uc_mem, instr_lut, 0b11110000, 0b01010000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_alusub, cbptr_store_ud);      // SUBI
+    define_instruction(&uc_mem, instr_lut, 0b11110000, 0b01100000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_aluor, cbptr_store_ud);       // ORI
+    define_instruction(&uc_mem, instr_lut, 0b11110000, 0b01110000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_aluand, cbptr_store_ud);      // ANDI
     define_instruction(&uc_mem, instr_lut, 0b11110000, 0b11100000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_mov, cbptr_store_ud);         // LDI
 
     print_regfile(regfile);

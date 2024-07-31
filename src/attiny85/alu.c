@@ -25,8 +25,7 @@ uint8_t extract_bits(uint8_t *buf) {
     return res;
 }
 
-uint32_t *alloc_uncached_alucon(DMA_MEM_MAP *mp, DMA_CB *alu_root, uint8_t mode) {
-    uint32_t *alucon = alloc_uncached_uint32(mp, 8);
+void populate_alucon(DMA_MEM_MAP *mp, uint32_t *alucon, DMA_CB *alu_root, uint8_t mode) {
     switch (mode) {
         case ALUCON_ZNVS:
             for (uint8_t i=0; i < 7; i++) alucon[i] = MEM_BUS_ADDR(mp, alu_root);
@@ -43,7 +42,6 @@ uint32_t *alloc_uncached_alucon(DMA_MEM_MAP *mp, DMA_CB *alu_root, uint8_t mode)
             alucon[3] = MEM_BUS_ADDR(mp, alu_root+12);
             break;
     }
-    return alucon;
 }
 
 DMA_CB *cc_alu8(DMA_CTX *pctx, DMA_MEM_REF alu_lut, DMA_MEM_REF rd, DMA_MEM_REF rr, DMA_MEM_REF carry, 
