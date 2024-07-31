@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include "alu.h"
+#include "lut.h"
 #include "dma_chain.h"
 
 #define DMA_CHAN 5
@@ -95,6 +96,65 @@ DMA_CB *cc_alu8(DMA_CTX *pctx, DMA_MEM_REF alu_lut, DMA_MEM_REF rd, DMA_MEM_REF 
     // Store N bit
     cc_mem2mem(ctx, 0, 1, cc_ofs(rd, 7), cc_ofs(sreg, 2));
     cc_ret(ctx);
+    return cc_clean(pctx, ctx);
+}
+
+DMA_CB *cc_unary_alu(DMA_CTX *pctx, DMA_MEM_REF unary_lut, DMA_MEM_REF lut_8to64, DMA_MEM_REF tmp, DMA_MEM_REF instr, DMA_MEM_REF rd, DMA_MEM_REF rr, 
+                     DMA_MEM_REF sreg, DMA_CB *aluadd, DMA_CB *alusub, DMA_CB *bitwrite) {
+    DMA_CTX *ctx = init_ctx(pctx);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4*16, unary_lut, tmp);
+    cc_combined_shift(ctx, tmp, 4, instr, 4);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, tmp, CC_RREF(1, next_cb));
+    cc_dummy(ctx);
+
+    // COM
+    ((uint32_t*)unary_lut.ptr)[0] = MEM_BUS_ADDR(ctx->mp, cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, rd, rr));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, cc_ofs(lut_8to64, 255*8), rd);
+    cc_goto(ctx, CC_MREF(alusub));
+
+    // NEG
+    ((uint32_t*)unary_lut.ptr)[1] = MEM_BUS_ADDR(ctx->mp, cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, rd, rr));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, lut_8to64, rd);
+    cc_goto(ctx, CC_MREF(alusub));
+
+    // SWAP
+    ((uint32_t*)unary_lut.ptr)[2] = MEM_BUS_ADDR(ctx->mp, cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, rd, cc_ofs(rd, 8)));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, cc_ofs(rd, 4), rd);
+    cc_goto(ctx, CC_MREF(alusub));
+
+    // INC
+    ((uint32_t*)unary_lut.ptr)[3] = MEM_BUS_ADDR(ctx->mp, cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, cc_ofs(lut_8to64, 8), rr));
+    cc_goto(ctx, CC_MREF(aluadd));
+
+    // ASR
+    ((uint32_t*)unary_lut.ptr)[5] = MEM_BUS_ADDR(ctx->mp, cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 1, rd, sreg));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 7, cc_ofs(rd, 1), rd);
+    cc_ret(ctx);
+
+    // LSR
+    ((uint32_t*)unary_lut.ptr)[6] = MEM_BUS_ADDR(ctx->mp, cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 1, rd, sreg));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 7, cc_ofs(rd, 1), rd);
+    CC_REF(0).unused = 0;
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 1, CC_RREF(0, unused), cc_ofs(rd, 7));
+    cc_ret(ctx);
+
+    // ROR
+    ((uint32_t*)unary_lut.ptr)[7] = MEM_BUS_ADDR(ctx->mp, cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 1, sreg, cc_ofs(rd, 8)));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 1, rd, sreg);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, cc_ofs(rd, 1), rd);
+    cc_ret(ctx);
+
+    // DEC
+    ((uint32_t*)unary_lut.ptr)[10] = MEM_BUS_ADDR(ctx->mp, cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, cc_ofs(lut_8to64, 255*8), rr));
+    cc_goto(ctx, CC_MREF(aluadd));
+
+    // BSET / BCLR
+    CC_REF(0).unused = 0x00000100;
+    ((uint32_t*)unary_lut.ptr)[8] = MEM_BUS_ADDR(ctx->mp, cc_inv(ctx, cc_ofs(instr, 7), cc_ofs(rr, 7), 1));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 3, cc_ofs(instr, 4), rr);
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, sreg, rd);
+    cc_goto(ctx, CC_MREF(bitwrite));
+
     return cc_clean(pctx, ctx);
 }
 
