@@ -45,7 +45,7 @@ void print_regfile(uint8_t *regfile) {
     for (uint8_t i=0; i < 32; i++) {
         //if (i < 10) printf("%02x", i, extract_bits(regfile+8*i));
         //else 
-        printf("%02x", extract_bits(regfile+8*i));
+        printf("%02x", regfile[i]);
         if ((i%8) == 7) printf("\n");
         else printf(", ");
     }
@@ -85,10 +85,11 @@ int main(void) {
     
     DMA_CB *cbs = alloc_uncached_cbs(&uc_mem, 512);
     memset(cbs, 0, 256*sizeof(DMA_CB));
-    uint16_t *prog = alloc_uncached_uint16(&uc_mem, 32);
-    memset(prog, 0, 32*sizeof(uint16_t));
+    uint16_t *prog = alloc_uncached_uint16(&uc_mem, 1024);
+    memset(prog, 0, 1024*sizeof(uint16_t));
     int wpc = 0;
     //prog[wpc++] = 0b0000111100000001;   // ADD r16, r17
+    prog[wpc++] = 0;
     //prog[wpc++] = 0b0010111100100000;   // MOV r18, r16
     //prog[wpc++] = 0b0001111110001001;   // ADC r24, r25
     //prog[wpc++] = 0b0001101100001000;   // SUB r16, r24
@@ -96,17 +97,23 @@ int main(void) {
     //prog[wpc++] = 0b1110101000110101;   // LDI r19, 0xa5
     //prog[wpc++] = 0b1110100100001100;   // LDI r16, -100
     //prog[wpc++] = 0b1110011000010100;   // LDI r17, 100
-    prog[wpc++] = 0b0001011110001001;   // SUB r24, r25
+    //prog[wpc++] = 0b0001011110001001;   // SUB r24, r25
     //prog[wpc++] = 0b0110100100001100;   // ORI r16, 0x9c
     //prog[wpc++] = 0b0111011000010100;   // ANDI r17, 0x64
-    prog[wpc++] = 0b1001010011001000;   // BCLR 4
-    prog[wpc++] = 0;
-    uint8_t *regfile = alloc_uncached_uint8(&uc_mem, 32*8);
-    load_bits(0x55, regfile+7*8);
-    load_bits(0x37, regfile+(16*8));
-    load_bits(0xf3, regfile+(17*8));
-    load_bits(0xc1, regfile+(24*8));
-    load_bits(0xff, regfile+(25*8));
+    //prog[wpc++] = 0b1001010011001000;   // BCLR 4
+    prog[wpc++] = 0b1100111111111110;   // RJMP -2
+    //prog[wpc++] = 0;
+    uint8_t *rampad = alloc_uncached_uint8(&uc_mem, 1);
+    uint8_t *regfile = alloc_uncached_uint8(&uc_mem, 32);
+    //load_bits(0x55, regfile+7*8);
+    //load_bits(0x37, regfile+(16*8));
+    //load_bits(0xf3, regfile+(17*8));
+    //load_bits(0xc1, regfile+(24*8));
+    //load_bits(0xff, regfile+(25*8));
+    regfile[16] = 0x37;
+    regfile[17] = 0xf3;
+    regfile[24] = 0xc1;
+    regfile[25] = 0xff;
     uint8_t *ram = alloc_uncached_uint8(&uc_mem, 576);
 
     // lut.c
@@ -137,6 +144,7 @@ int main(void) {
     uint8_t *carry = alloc_uncached_uint8(&uc_mem, 1);
     
     uint16_t *pc = alloc_uncached_uint16(&uc_mem, 2);
+    pc[0] = 2;
     uint16_t *pc_incr = alloc_uncached_uint16(&uc_mem, 1);
     pc_incr[0] = 2;
     uint8_t *zero = alloc_uncached_uint8(&uc_mem, 1);
@@ -145,7 +153,7 @@ int main(void) {
     instruction *instr_lut = alloc_uncached(&uc_mem, 256*sizeof(instruction));
     instruction *tmp_instr = alloc_uncached(&uc_mem, sizeof(instruction));
     uint32_t *regfile_ptrs = alloc_uncached_uint32(&uc_mem, 32);
-    for (int i=0; i < 32; i++) regfile_ptrs[i] = MEM_BUS_ADDR(&uc_mem, regfile+8*i);
+    for (int i=0; i < 32; i++) regfile_ptrs[i] = MEM_BUS_ADDR(&uc_mem, regfile+i);
     uint32_t *prog_ptr = alloc_uncached_uint32(&uc_mem, 32);
     prog_ptr[0] = MEM_BUS_ADDR(&uc_mem, prog);
 
@@ -166,6 +174,9 @@ int main(void) {
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(&(tmp_instr->store)), CC_DREF("jump_store", next_cb));
     //cc_ret(ctx);
 
+    // Load SREG
+    cc_convert_8to64(ctx, CC_MREF(lut_8to64), CC_MREF(ram+0x3f), CC_MREF(sreg));
+
     // Clear internal ALU carry bit
     CC_REF(0).unused = 0;
     DMA_CB *cbptr_jump_load1 = cc_label(ctx, "jump_load1", cc_mem2mem(ctx, 0, 1, CC_RREF(0, unused), CC_MREF(carry)));
@@ -182,15 +193,15 @@ int main(void) {
     DMA_CB *cbptr_jump_load2 = cc_label(ctx, "jump_load2", cc_dummy(ctx));
 
     // Subroutine for loading Rr
-    DMA_CB *cbptr_load_rd = cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 32*8, CC_MREF(regfile), CC_MREF(tmp8));
-    cc_combined_shift(ctx, CC_MREF(tmp8), 16*8, CC_MREF(instr+9), 1);
-    cc_combined_shift(ctx, CC_MREF(tmp8), 8, CC_MREF(instr), 4);
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, CC_MREF(tmp8), CC_MREF(rr));
+    DMA_CB *cbptr_load_rd = cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 32, CC_MREF(regfile), CC_MREF(tmp8));
+    cc_combined_shift(ctx, CC_MREF(tmp8), 16, CC_MREF(instr+9), 1);
+    cc_combined_shift(ctx, CC_MREF(tmp8), 1, CC_MREF(instr), 4);
+    cc_convert_8to64(ctx, CC_MREF(lut_8to64), CC_MREF(tmp8), CC_MREF(rr));
 
     // Subroutine for loading Rd
-    DMA_CB *cbptr_load_d = cc_label(ctx, "load_d", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 32*8, CC_MREF(regfile), CC_MREF(tmp8)));
-    cc_combined_shift(ctx, CC_MREF(tmp8), 8, CC_MREF(instr+4), 5);
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, CC_MREF(tmp8), CC_MREF(rd));
+    DMA_CB *cbptr_load_d = cc_label(ctx, "load_d", cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 32, CC_MREF(regfile), CC_MREF(tmp8)));
+    cc_combined_shift(ctx, CC_MREF(tmp8), 1, CC_MREF(instr+4), 5);
+    cc_convert_8to64(ctx, CC_MREF(lut_8to64), CC_MREF(tmp8), CC_MREF(rd));
     cc_goto(ctx, CC_CREF("jump_oper"));
     
     // Subroutine for loading Rr with an immediate value
@@ -198,13 +209,16 @@ int main(void) {
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(instr+8), CC_MREF(rr+4));
 
     // Subroutine for loading Rd from the upper registers only
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 16*8, CC_MREF(regfile+16*8), CC_MREF(tmp8));
-    cc_combined_shift(ctx, CC_MREF(tmp8), 8, CC_MREF(instr+4), 4);
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, CC_MREF(tmp8), CC_MREF(rd));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 16, CC_MREF(regfile+16), CC_MREF(tmp8));
+    cc_combined_shift(ctx, CC_MREF(tmp8), 1, CC_MREF(instr+4), 4);
+    cc_convert_8to64(ctx, CC_MREF(lut_8to64), CC_MREF(tmp8), CC_MREF(rd));
     cc_goto(ctx, CC_CREF("jump_oper"));
 
-    // Subroutine for loading an immediate value for RJMP
-    DMA_CB *cbptr_load_jk = cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 12, CC_MREF(instr), CC_MREF(rr+1));
+    // Subroutine for loading an immediate value for RJMP (with sign extension)
+    DMA_CB *cbptr_load_jk = cc_mem2mem(ctx, 0, 1, CC_RREF(0, unused), CC_MREF(rr));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 12, CC_MREF(instr), CC_MREF(rr+1));
+    CC_REF(0).stride = 0xffff;
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (2<<16) | 1, CC_MREF(rr+12), CC_MREF(rr+13));
 
     // Subroutine for loading the program counter
     DMA_CB *cbptr_load_pc = cc_convert_8to64(ctx, CC_MREF(lut_8to64), CC_MREF(pc), CC_MREF(rd));
@@ -214,9 +228,10 @@ int main(void) {
     // Subroutine for loading values for ADIW/SBIW
     DMA_CB *cbptr_load_w = cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(instr), CC_MREF(rr));
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2, CC_MREF(instr+6), CC_MREF(rr+4));
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8*8, CC_MREF(regfile+24*8), CC_MREF(tmp8));
-    cc_combined_shift(ctx, CC_MREF(tmp8), 16, CC_MREF(instr+4), 2);
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 16, CC_MREF(tmp8), CC_MREF(rd));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, CC_MREF(regfile+24), CC_MREF(tmp8));
+    cc_combined_shift(ctx, CC_MREF(tmp8), 2, CC_MREF(instr+4), 2);
+    cc_convert_8to64(ctx, CC_MREF(lut_8to64), CC_MREF(tmp8), CC_MREF(rd));
+    cc_convert_8to64(ctx, CC_MREF(lut_8to64), CC_MREF(tmp8+1), CC_MREF(rd+8));
     
 
     // OPERATION
@@ -313,26 +328,29 @@ int main(void) {
     // Subroutine for storing Rd
     DMA_CB *cbptr_store_d = cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 128, CC_MREF(regfile_ptrs), CC_MREF(tmp8));
     cc_combined_shift(ctx, CC_MREF(tmp8), 4, CC_MREF(instr+4), 5);
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(tmp8), CC_RREF(1, dest_ad));
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, CC_MREF(rd), CC_MREF(regfile));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(tmp8), CC_RREF(11, dest_ad));
+    cc_convert_64to8(ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(rd), CC_MREF(regfile));
     cc_goto(ctx, CC_CREF("finish"));
 
     // Subroutine for storing Rd (upper registers only)
     DMA_CB *cbptr_store_ud = cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 128, CC_MREF(regfile_ptrs+16), CC_MREF(tmp8));
     cc_combined_shift(ctx, CC_MREF(tmp8), 4, CC_MREF(instr+4), 4);
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(tmp8), CC_RREF(1, dest_ad));
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 8, CC_MREF(rd), CC_MREF(regfile));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(tmp8), CC_RREF(11, dest_ad));
+    cc_convert_64to8(ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(rd), CC_MREF(regfile));
     cc_goto(ctx, CC_CREF("finish"));
 
     // Subroutine for storing the program counter
     DMA_CB *cbptr_store_pc = cc_convert_64to8(ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(rd), CC_MREF(pc));
     cc_convert_64to8(ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(rd+8), cc_ofs(CC_MREF(pc), 1));
+    cc_goto(ctx, CC_CREF("finish_no_sreg"));
 
     // Subroutine for storing Rd (register pairs)
     DMA_CB *cbptr_store_w = cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 32, CC_MREF(regfile_ptrs+24), CC_MREF(tmp8));
     cc_combined_shift(ctx, CC_MREF(tmp8), 8, CC_MREF(instr+4), 2);
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(tmp8), CC_RREF(1, dest_ad));
-    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 16, CC_MREF(rd), CC_MREF(regfile));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(tmp8), CC_RREF(12, dest_ad));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_MREF(tmp8+4), CC_RREF(23, dest_ad));
+    cc_convert_64to8(ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(rd), CC_MREF(regfile));
+    cc_convert_64to8(ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(rd+8), CC_MREF(regfile));
     cc_goto(ctx, CC_CREF("finish"));
 
     // Subroutine for storing SREG
@@ -340,7 +358,10 @@ int main(void) {
     cc_goto(ctx, CC_CREF("finish"));
 
     // INCREMENT COUNTER
-    DMA_CB *cbptr_finish = cc_label(ctx, "finish", cc_add16(ctx, CC_MREF(addlut), CC_MREF(pc), CC_MREF(pc_incr), CC_MREF(zero), CC_MREF(tmp), CC_MREF(pc)));
+    DMA_CB *cbptr_finish = cc_label(ctx, "finish", cc_convert_64to8(ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(sreg), CC_MREF(ram+0x3f)));
+    cc_label(ctx, "finish_no_sreg", cc_add16(ctx, CC_MREF(addlut), CC_MREF(pc), CC_MREF(pc_incr), CC_MREF(zero), CC_MREF(tmp), 
+                                                            CC_MREF(tmp8)));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2, CC_MREF(tmp8), CC_MREF(pc));
     cc_goto(ctx, CC_CREF("begin"));
 
     printf("Total number of CBs: %d, total memory %08x\n", ctx->n_cbs, uc_mem.len);
@@ -376,8 +397,8 @@ int main(void) {
 
     for (int i=0; i < 16; i++) printf("%d", instr[i]);
     printf("\n");
-    printf("rd: %02x, rr: %02x, carry: %x\n", extract_bits(rd), extract_bits(rr), carry[0]);
-    printf("pc: %04x, sreg: %02x\n", pc[0], extract_bits(sreg));
+    printf("rd: %02x%02x, rr: %02x%02x, carry: %x\n", extract_bits(rd+8), extract_bits(rd), extract_bits(rr+8), extract_bits(rr), carry[0]);
+    printf("pc: %04x, sreg: %02x (ram %02x)\n", pc[0], extract_bits(sreg), ram[0x3f]);
     print_regfile(regfile);
 
     done(0);
