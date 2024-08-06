@@ -35,6 +35,20 @@ DMA_CB *cc_mem2mem(DMA_CTX *ctx, uint32_t ti, uint32_t tfr_len, DMA_MEM_REF srce
     return cb;
 }
 
+DMA_CB *cc_mem2reg(DMA_CTX *ctx, MEM_MAP reg, uint32_t ti, uint32_t tfr_len, DMA_MEM_REF srce, uint32_t dest) {
+    DMA_CB *cb = ctx->start_cb + ctx->n_cbs;
+    cc_goto(ctx, CC_MREF(cb));
+    cb->ti = ti;
+    cb->tfr_len = tfr_len;
+    if (srce.ptr) cb->srce_ad = MEM_BUS_ADDR(ctx->mp, srce.ptr + srce.offset);
+    else cc_link(ctx, srce, CC_MREF(&(cb->srce_ad)));
+    cb->dest_ad = REG_BUS_ADDR(reg, dest);
+    cb->next_cb = 0;
+    cc_link(ctx, CC_CREF("__end__"), CC_MREF(&(cb->next_cb)));
+    ctx->n_cbs++;
+    return cb;
+}
+
 DMA_CB *cc_imm2mem(DMA_CTX *ctx, uint32_t ti, uint32_t tfr_len, DMA_MEM_REF srce, DMA_MEM_REF dest) {
     DMA_CB *cb = ctx->start_cb + ctx->n_cbs;
     cc_goto(ctx, CC_MREF(cb));
@@ -186,12 +200,12 @@ DMA_CB *cc_clean(DMA_CTX *pctx, DMA_CTX *ctx) {
     return r;
 }
 
-DMA_MEM_REF cc_ofs(DMA_MEM_REF src, uint32_t n) {
+DMA_MEM_REF cc_ofs(DMA_MEM_REF src, int32_t n) {
     src.offset += n;
     return src;
 }
 
-DMA_MEM_REF new_ref(char *name, void *ptr, uint32_t offset) {
+DMA_MEM_REF new_ref(char *name, void *ptr, int32_t offset) {
     DMA_MEM_REF r;
     r.name = name;
     r.ptr = ptr;

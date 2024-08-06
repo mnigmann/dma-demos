@@ -6,6 +6,7 @@
 #include <rpihw/rpihw.h>
 #include "alu.h"
 #include "lut.h"
+#include "ldst.h"
 
 #define DMA_CHAN 5
 
@@ -103,7 +104,10 @@ uint8_t parse_hex(char *buf) {
 int main(int argc, char **argv) {
     signal(SIGINT, interrupt);
     map_periph(&dma_regs, (void *)DMA_BASE, PAGE_SIZE);
+    map_periph(&gpio_regs, (void *)GPIO_BASE, PAGE_SIZE);
     map_uncached_mem(&uc_mem, 16*PAGE_SIZE);
+
+    gpio_mode(16, GPIO_OUT);
     
     DMA_CB *cbs = alloc_uncached_cbs(&uc_mem, 512);
     memset(cbs, 0, 256*sizeof(DMA_CB));
@@ -124,9 +128,12 @@ int main(int argc, char **argv) {
     //prog[wpc++] = 0b1001010011001000;   // BCLR 4
     //prog[wpc++] = 0b1100111111111110;   // RJMP -2
     prog[wpc++] = 0b1110000011101000;   // LDI r30, 8
+    prog[wpc++] = 0b1110100011000000;   // LDI r28, 0x80
+    prog[wpc++] = 0b1110000011010000;   // LDI r29, 0x00
     prog[wpc++] = 0b0000111111111110;   // ADD r31, r30
+    prog[wpc++] = 0b1001001111111001;   // ST Y+, r31
     prog[wpc++] = 0b1001010111101010;   // DEC r30
-    prog[wpc++] = 0b1111011111101001;   // BRNE .-6
+    prog[wpc++] = 0b1111011111100001;   // BRNE .-8
     if (argc == 2) {
         FILE *fptr = fopen(argv[1], "r");
         char buf[64];
@@ -162,7 +169,7 @@ int main(int argc, char **argv) {
             }
         } while (n_bytes || n_read);
         for (int i=0; i < 0x50; i++) {
-            printf("%02x ", prog[i]);
+            printf("%04x ", prog[i]);
             if ((i % 16) == 15) printf("\n");
         }
         printf("\n");
@@ -179,6 +186,10 @@ int main(int argc, char **argv) {
     regfile[24] = 0xc1;
     regfile[25] = 0xff;
     uint8_t *ram = alloc_uncached_uint8(&uc_mem, 576);
+    for (int i=96; i < 106; i++) regfile[i] = 0xaa;
+#ifdef DEBUG_LOG
+    uint16_t *log = alloc_uncached_uint16(&uc_mem, 256);
+#endif
 
     // lut.c
     uint16_t *addlut = alloc_uncached_addlut(&uc_mem);
@@ -206,6 +217,7 @@ int main(int argc, char **argv) {
     flag_lut[12] = flag_lut[13] = flag_lut[15] = 1;
     uint8_t *sreg = alloc_uncached_uint8(&uc_mem, 8);
     uint8_t *carry = alloc_uncached_uint8(&uc_mem, 1);
+    uint8_t *zcarry = alloc_uncached_uint8(&uc_mem, 1);
     
     uint16_t *pc = alloc_uncached_uint16(&uc_mem, 2);
     uint16_t *pc_incr = alloc_uncached_uint16(&uc_mem, 1);
@@ -217,8 +229,11 @@ int main(int argc, char **argv) {
     instruction *tmp_instr = alloc_uncached(&uc_mem, sizeof(instruction));
     uint32_t *regfile_ptrs = alloc_uncached_uint32(&uc_mem, 32);
     for (int i=0; i < 32; i++) regfile_ptrs[i] = MEM_BUS_ADDR(&uc_mem, regfile+i);
-    uint32_t *prog_ptr = alloc_uncached_uint32(&uc_mem, 32);
+    uint32_t *prog_ptr = alloc_uncached_uint32(&uc_mem, 1);
     prog_ptr[0] = MEM_BUS_ADDR(&uc_mem, prog);
+
+    uint32_t *pin16 = alloc_uncached_uint32(&uc_mem, 1);
+    pin16[0] = 1<<16;
 
     DMA_CTX *ctx = init_ctx(NULL);
     ctx->mp = &uc_mem;
@@ -240,6 +255,19 @@ int main(int argc, char **argv) {
     // Load SREG
     cc_convert_8to64(ctx, CC_MREF(lut_8to64), CC_MREF(ram+0x3f), CC_MREF(sreg));
 
+#ifdef DEBUG_LOG
+    // Log PC
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 510, CC_MREF(log+1), CC_MREF(log));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2, CC_MREF(pc), CC_MREF(log+255));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 1, CC_MREF(ram+0x3f), cc_ofs(CC_MREF(log+255), 1));
+#endif
+
+    // Set zcarry
+    CC_REF(0).unused = 1;
+    cc_mem2mem(ctx, 0, 1, CC_RREF(0, unused), CC_MREF(zcarry));
+
+    cc_mem2reg(ctx, gpio_regs, DMA_CB_SRCE_INC, 4, CC_MREF(pin16), GPIO_SET0);
+
     // Clear internal ALU carry bit
     CC_REF(0).unused = 0;
     DMA_CB *cbptr_jump_load1 = cc_label(ctx, "jump_load1", cc_mem2mem(ctx, 0, 1, CC_RREF(0, unused), CC_MREF(carry)));
@@ -248,7 +276,19 @@ int main(int argc, char **argv) {
     // FIRST LOAD
     // Subroutine for loading the carry bit
     DMA_CB *cbptr_load_carry = cc_mem2mem(ctx, 0, 1, CC_MREF(sreg), CC_MREF(carry));
+    cc_mem2mem(ctx, 0, 1, CC_MREF(sreg+1), CC_MREF(zcarry));
     cc_goto(ctx, CC_CREF("jump_load2"));
+
+    // Subroutine for storing the program counter to the stack
+    DMA_CB *cbptr_save_pc = cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2, CC_MREF(regfile-3), CC_MREF(tmp8));
+    CC_REF(0).stride = (0xfffe)<<16;
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (1<<16) | 1, CC_MREF(pc), CC_MREF(tmp8+3));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2, CC_MREF(ram + 0x3d), cc_ofs(CC_RREF(1, stride), 2));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC | DMA_TDMODE, (1<<16) | 2, CC_MREF(tmp8), CC_MREF(regfile-3));
+    CC_REF(-1).unused = 0xfffe;
+    CC_REF(-2).unused = 0;
+    cc_add16(ctx, CC_MREF(addlut), CC_RREF(-1, unused), CC_MREF(ram+0x3d), CC_RREF(-2, unused), CC_MREF(tmp), CC_MREF(tmp8));
+    cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2, CC_MREF(tmp8), CC_MREF(ram+0x3d));
 
 
     // SECOND LOAD
@@ -373,9 +413,11 @@ int main(int argc, char **argv) {
     populate_alucon(&uc_mem, alucon_bitwise, cbptr_alu_root, ALUCON_ZNVS);
     populate_alucon(&uc_mem, alucon_word, cbptr_alu_root, ALUCON_CZNVS);
 
-    // Internal subroutine for negating the carry bit
+    // Internal subroutine for negating the carry bit and updating Z
     cc_label(ctx, "negate_carry", cc_inv(ctx, CC_MREF(sreg), CC_MREF(sreg), 1));
     cc_imm2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 4, CC_CREF("jump_store"), CC_DREF("alu_end", next_cb));
+    cc_mem2mem(ctx, 0, 1, CC_MREF(sreg+1), CC_RREF(1, tfr_len));
+    cc_mem2mem(ctx, 0, 0, CC_MREF(zcarry), CC_MREF(sreg+1));
     cc_goto(ctx, CC_CREF("jump_store"));
 
     // Subroutine for moving Rr to Rd
@@ -406,6 +448,8 @@ int main(int argc, char **argv) {
     DMA_CB *cbptr_oper_unary = cc_unary_alu(ctx, CC_MREF(unary_lut), CC_MREF(lut_8to64), CC_MREF(tmp8), CC_MREF(instr),
                                             CC_MREF(rd), CC_MREF(rr), CC_MREF(sreg), cbptr_oper_aluadd, cbptr_oper_alusub, cbptr_oper_bitwrite_sreg);
 
+    // Subroutine for LD and ST
+    DMA_CB *cbptr_oper_ldst = cc_ldst(ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(regfile), CC_MREF(instr));
 
     // STORE
     // Dummy block for jumping to the desired operation
@@ -459,6 +503,7 @@ int main(int argc, char **argv) {
     DMA_CB *cbptr_finish = cc_label(ctx, "finish", cc_convert_64to8(ctx, CC_MREF(addlut), CC_MREF(tmp), CC_MREF(sreg), CC_MREF(ram+0x3f)));
     cc_label(ctx, "finish_no_sreg", cc_add16(ctx, CC_MREF(addlut), CC_MREF(pc), CC_MREF(pc_incr), CC_MREF(zero), CC_MREF(tmp), 
                                                             CC_MREF(tmp8)));
+    cc_mem2reg(ctx, gpio_regs, DMA_CB_SRCE_INC, 4, CC_MREF(pin16), GPIO_CLR0);
     cc_mem2mem(ctx, DMA_CB_SRCE_INC | DMA_CB_DEST_INC, 2, CC_MREF(tmp8), CC_MREF(pc));
     cc_goto(ctx, CC_CREF("begin"));
 
@@ -482,11 +527,13 @@ int main(int argc, char **argv) {
     define_instruction(&uc_mem, instr_lut, 0b11110000, 0b01010000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_alusub, cbptr_store_ud);      // SUBI
     define_instruction(&uc_mem, instr_lut, 0b11110000, 0b01100000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_aluor, cbptr_store_ud);       // ORI
     define_instruction(&uc_mem, instr_lut, 0b11110000, 0b01110000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_aluand, cbptr_store_ud);      // ANDI
+    define_instruction(&uc_mem, instr_lut, 0b11111100, 0b10010000, cbptr_jump_load2, cbptr_jump_oper, cbptr_oper_ldst, cbptr_finish);       // LD/ST
     define_instruction(&uc_mem, instr_lut, 0b11111110, 0b10010100, cbptr_jump_load2, cbptr_load_d, cbptr_oper_unary, cbptr_store_d);
     define_instruction(&uc_mem, instr_lut, 0b11111111, 0b10010110, cbptr_jump_load2, cbptr_load_w, cbptr_oper_aluword, cbptr_store_w);      // ADIW
     define_instruction(&uc_mem, instr_lut, 0b11111111, 0b10010111, cbptr_jump_load2, cbptr_load_w, cbptr_oper_aluwsub, cbptr_store_w);      // SBIW
     define_instruction(&uc_mem, instr_lut, 0b11111000, 0b10111000, cbptr_jump_load2, cbptr_jump_oper, cbptr_jump_store, cbptr_store_out);   // OUT
     define_instruction(&uc_mem, instr_lut, 0b11110000, 0b11000000, cbptr_jump_load2, cbptr_load_jk, cbptr_oper_aluword, cbptr_store_pc);    // RJMP
+    define_instruction(&uc_mem, instr_lut, 0b11110000, 0b11010000, cbptr_save_pc, cbptr_load_jk, cbptr_oper_aluword, cbptr_store_pc);       // RCALL
     define_instruction(&uc_mem, instr_lut, 0b11110000, 0b11100000, cbptr_jump_load2, cbptr_load_k, cbptr_oper_mov, cbptr_store_ud);         // LDI
     define_instruction(&uc_mem, instr_lut, 0b11111000, 0b11110000, cbptr_jump_load2, cbptr_load_brk, cbptr_oper_brb, cbptr_store_pc);
 
@@ -499,8 +546,16 @@ int main(int argc, char **argv) {
     printf("\n");
     printf("rd: %02x%02x, rr: %02x%02x, carry: %x\n", extract_bits(rd+8), extract_bits(rd), extract_bits(rr+8), extract_bits(rr), carry[0]);
     printf("pc: %04x, sreg: %02x (ram %02x)\n", pc[0], extract_bits(sreg), ram[0x3f]);
+    printf("tmp: %04x %04x %04x\n", tmp[0], tmp[1], tmp[2]);
     print_regfile(regfile);
     print_ram(ram);
+
+#ifdef DEBUG_LOG
+    for (int i=0; i < 256; i++) {
+        printf("%04x ", log[i]);
+        if ((i % 16) == 15) printf("\n");
+    }
+#endif
 
     done(0);
 }
